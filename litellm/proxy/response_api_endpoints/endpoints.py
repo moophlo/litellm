@@ -13,6 +13,7 @@ from litellm.integrations.custom_guardrail import ModifyResponseException
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import (
     UserAPIKeyAuth,
+    _enforce_key_and_fallback_model_access,
     user_api_key_auth,
     user_api_key_auth_websocket,
 )
@@ -980,6 +981,7 @@ async def responses_websocket_endpoint(
     from litellm.proxy.proxy_server import (
         general_settings,
         llm_router,
+        llm_model_list,
         proxy_config,
         proxy_logging_obj,
         user_api_base,
@@ -1037,23 +1039,55 @@ async def responses_websocket_endpoint(
                 )
                 await websocket.close(code=1008, reason="Missing model")
                 return
-            websocket = _ReplayWebSocket(websocket, first_message)  # type: ignore[assignment]
-        except json.JSONDecodeError:
-            await websocket.send_text(
-                json.dumps({
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": "First message is not valid JSON",
-                    },
-                })
+    
+            # Re-enforce key-level model access now that the model has been
+            # resolved from the first message instead of the URL query param.
+            await _enforce_key_and_fallback_model_access(
+                valid_token=user_api_key_dict,
+                request_data={"model": model},
+                route="/v1/responses",
+                llm_model_list=llm_model_list,
+                llm_router=llm_router,
             )
-            await websocket.close(code=1008, reason="Invalid first message")
-            return
+            websocket = _ReplayWebSocket(websocket, first_message)  # type: ignore[assignment]
         except asyncio.TimeoutError:
             await websocket.close(
                 code=1008, reason="Timeout waiting for first message with model"
             )
+            return
+        except json.JSONDecodeError:
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "First message is not valid JSON",
+                        },
+                    }
+                )
+            )
+            await websocket.close(code=1008, reason="Invalid first message")
+            return
+        except HTTPException as e:
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "authentication_error",
+                            "message": str(e.detail),
+                        },
+                    }
+                )
+            )
+            await websocket.close(code=1008, reason="Model access denied")
+            return
+        except Exception:
+            verbose_proxy_logger.exception(
+                "Failed to extract model from first WebSocket message"
+            )
+            await websocket.close(code=1008, reason="Invalid first message")
             return
 
     data: Dict[str, Any] = {
