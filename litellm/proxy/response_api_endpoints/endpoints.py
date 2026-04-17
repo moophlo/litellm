@@ -1038,16 +1038,22 @@ async def responses_websocket_endpoint(
                 await websocket.close(code=1008, reason="Missing model")
                 return
             websocket = _ReplayWebSocket(websocket, first_message)  # type: ignore[assignment]
+        except json.JSONDecodeError:
+            await websocket.send_text(
+                json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "First message is not valid JSON",
+                    },
+                })
+            )
+            await websocket.close(code=1008, reason="Invalid first message")
+            return
         except asyncio.TimeoutError:
             await websocket.close(
                 code=1008, reason="Timeout waiting for first message with model"
             )
-            return
-        except Exception:
-            verbose_proxy_logger.exception(
-                "Failed to extract model from first WebSocket message"
-            )
-            await websocket.close(code=1008, reason="Invalid first message")
             return
 
     data: Dict[str, Any] = {
