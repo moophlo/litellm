@@ -947,12 +947,12 @@ class _ReplayWebSocket:
         self._ws = websocket
         self._replay: Optional[str] = first_message
 
-    async def receive_text(self) -> str:
+    async def receive(self) -> dict:
         if self._replay is not None:
             msg = self._replay
             self._replay = None
-            return msg
-        return await self._ws.receive_text()
+            return {"type": "websocket.receive", "text": msg}
+        return await self._ws.receive()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._ws, name)
